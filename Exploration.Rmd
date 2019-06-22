@@ -1,0 +1,82 @@
+---
+title: "Exploration"
+output: html_document
+---
+
+# Lyft Data Exploration
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Load Libraries
+
+```{r}
+library(tidyverse)
+library(gridExtra)
+library(lme4)
+```
+
+## Load Data and Format
+
+```{r}
+data = read_csv("CleanLyftData.csv", col_types = cols())
+data$DOW = factor(data$DOW, levels = seq(1,7), labels = c("Mon", "Tue", "Wed", "Thur", "Fri", "Sat", "Sun"))
+data$Month = factor(data$Month, levels = seq(1,12), labels = seq(1,12))
+data$Type = factor(data$Type)
+data$GapAction = factor(data$GapAction)
+data$StartLocation = factor(data$StartLocation)
+```
+
+### Preview Data
+
+```{r}
+tail(data)
+```
+
+## Visualizations
+
+```{r}
+theme = theme_minimal()
+```
+
+### Wage Distribution
+
+```{r}
+avg = sum(data$Amount + data$Tip) * (60/sum(data$Duration))
+ggplot(data) + theme +
+  geom_density(aes(Wage)) +
+  geom_vline(xintercept = avg, lty=2) +
+  geom_text(aes(avg, y = 0.1, label = paste("Mean: $", round(avg, 2), sep="")), nudge_x = 8) +
+  lims(x=c(0,50)) +
+  labs(title = "Wage Distribution")
+```
+
+```{r, fig.width=6}
+p1 = ggplot(data, aes(PickupTime, Wage)) + theme +
+  geom_point() +
+  geom_smooth()
+
+p2 = ggplot(data) +
+  geom_boxplot(aes(DOW, Wage))
+
+p3 = ggplot(data) +
+  geom_tile(aes(x = PickupTime, y = DOW, fill = (Amount + Tip) * (60/Duration))) +
+  labs(x = "Pickup Time", y = "Day of Week", fill = "Wage", title = "Wage per Day and Hour")
+
+grid.arrange(p1, p2, p3, ncol=3)
+```
+
+Gas-adjusted Hourly Wage
+
+```{r}
+(sum(data$Amount + data$Tip) - sum(data$GasUsage) * 3.40) * (60/sum(data$Duration))
+```
+
+## Determinants
+
+```{r}
+m = lmer(Wage ~ Duration + Distance + Shared + Conversation + (1|Session), data = data)
+summary(m)
+```
+
