@@ -52,19 +52,21 @@ ggplot(data) + theme +
   labs(title = "Wage Distribution")
 ```
 
-```{r, fig.width=6}
+```{r,}
 p1 = ggplot(data, aes(PickupTime, Wage)) + theme +
   geom_point() +
-  geom_smooth()
+  geom_smooth(method = "loess") +
+  labs(title = "Wage by Pickup Time")
 
 p2 = ggplot(data) +
-  geom_boxplot(aes(DOW, Wage))
+  geom_boxplot(aes(DOW, Wage)) +
+  labs(title = "Wage by Day of the Week")
 
-p3 = ggplot(data) +
-  geom_tile(aes(x = PickupTime, y = DOW, fill = (Amount + Tip) * (60/Duration))) +
+grid.arrange(p1, p2, ncol=2)
+
+ggplot(data) +
+  geom_tile(aes(x = PickupTime, y = DOW, fill = Wage)) +
   labs(x = "Pickup Time", y = "Day of Week", fill = "Wage", title = "Wage per Day and Hour")
-
-grid.arrange(p1, p2, p3, ncol=3)
 ```
 
 Gas-adjusted Hourly Wage
