@@ -16,6 +16,7 @@ knitr::opts_chunk$set(echo = TRUE)
 ## Load Libraries
 
 ```{r}
+library(colorspace)
 library(tidyverse)
 library(gridExtra)
 library(boot)
@@ -23,10 +24,10 @@ library(boot)
 
 ## Load Data and Format
 
-I also have kept track of all the gasoline I've purchased (kept in a speparate Google Spreadsheet). Here is the weighted (by gallons purchased) average price of gas. 
+I also have kept track of all the gasoline I've purchased (kept in a separate Google Spreadsheet). Here is the weighted (by gallons purchased) average price of gas. 
 
 ```{r}
-gasPrice = 3.433 # $ / gal
+gasPrice = 3.5006 # $ / gal
 ```
 
 Next, we load the data. The difference between `data_all` and `data_drv` is that `data_all` includes *everything*, including all driving that takes place when I don't have any passengers (e.g. when I'm searching for a ride). For the most part, `data_drv` is of most importance.
@@ -41,10 +42,10 @@ data_all$Period = factor(data_all$Period)
 data_all$Movement = factor(data_all$Movement)
 data_all$Origin = factor(data_all$Origin)
 data_all$Goal = factor(data_all$Goal)
+bins = seq(6, 22, 2)
+data_all$StartTimeBin = cut(data_all$StartTime, breaks = c(bins, 24), labels = bins)
 
 data_drv = read_csv("CleanLyftData_Drives.csv", col_types = cols())
-
-data_drv = data_drv[data_drv$Cancel == F, ]
 
 data_drv$DOW = factor(data_drv$DOW, levels = seq(1,7), labels = c("Mon", "Tue", "Wed", "Thur", "Fri", "Sat", "Sun"))
 data_drv$Month = factor(data_drv$Month, levels = seq(1,12), labels = seq(1,12))
@@ -53,6 +54,8 @@ data_drv$Period = factor(data_drv$Period)
 data_drv$Movement = factor(data_drv$Movement)
 data_drv$Origin = factor(data_drv$Origin)
 data_drv$Goal = factor(data_drv$Goal)
+data_drv$StartTimeBin = cut(data_drv$StartTime, breaks = c(bins, 24), labels = bins)
+
 
 paste(nrow(data_drv), "drives")
 
@@ -60,12 +63,40 @@ data_all %>%
   filter(Session > max(data_drv$Session) - 3) %>%
   group_by(Session) %>%
   summarise(Wage = paste("$", round(sum(Earnings + Tips, na.rm = T) * (60 / sum(Duration)), 2), sep=""),
+            AdjWage = paste("$", round(sum(Earnings + Tips - GasUsage * gasPrice, na.rm = T) * (60 / sum(Duration)), 2), sep=""),
             Revenue = sum(Earnings + Tips, na.rm = T),
             GasCost = round(sum(GasUsage) * gasPrice, 2)) %>%
   as.matrix()
 ```
 
-As one may see, I've given about 120 rides in just under 30 driving sessions (a session is the period in which I have Lyft turned on and am accepting rides).
+## Totals
+
+Let's view a handful of interesting summary statistics.
+
+```{r}
+c("Total Distance" = sum(data_drv$AdjDistance, na.rm = T), 
+  "Total Hours" = sum(data_drv$AdjDuration, na.rm = T) / 60,
+  "Drives per Session" = nrow(data_drv) / max(data_drv$Session))
+```
+
+```{r}
+c("Total Days" = as.integer(max(data_drv$Date) - min(data_drv$Date)),
+  "Total Passengers" = sum(data_drv$Passengers),
+  "Mean Hours per Week" = round((sum(data_drv$AdjDuration, na.rm = T) / 60) / (as.integer(max(data_drv$Date) - min(data_drv$Date)) / 7), 2),
+  "Mean Drives per Week" = round(nrow(data_drv) / (as.integer(max(data_drv$Date) - min(data_drv$Date)) / 7), 2))
+```
+
+```{r}
+c("Mean Revenue per Drive" = round(sum(data_drv$Earnings + data_drv$Tips) / nrow(data_drv), 2),
+  "Mean Gas Expenditure per Drive" = round(sum(data_drv$GasUsage * gasPrice) / nrow(data_drv), 2),
+  "Mean Gas Expenditure per Session" = round(sum(data_drv$GasUsage * gasPrice) / max(data_drv$Session), 2))
+```
+
+What's the median tip amount among those who tip?
+
+```{r}
+quantile(data_drv[data_drv$Tips > 0, ]$Tips, 0.5)
+```
 
 ### Preview Data
 
@@ -84,75 +115,162 @@ theme = theme_minimal()
 ### Wage Distribution
 
 ```{r}
-maint = (700 + 30 + 100 + 300) / 5000 # depreciation + oil + service + parts perthe next 5,000 miles
-
-avg = sum(data_drv$Earnings + data_drv$Tips) * (60/sum(data_drv$AdjDuration))
-maintInc = (data_drv$Earnings + data_drv$Tips - gasPrice * data_drv$AdjGas) * (60/data_drv$AdjDuration)
-avgMaintInc = sum(data_drv$Earnings + data_drv$Tips - gasPrice * data_drv$AdjGas) * (60/sum(data_drv$AdjDuration))
-
-ggplot(data_drv) + theme +
-  geom_density(aes(AdjWage)) +
-  geom_vline(xintercept = avg, lty=2) +
-  geom_text(aes(avg, y = 0.05, label = paste("Without gas\nMean: $", round(avg, 2), sep="")), nudge_x = 7) +
-  geom_density(aes(maintInc), col="red") +
-  geom_vline(xintercept = avgMaintInc, col="red", lty=2) +
-  geom_text(aes(avg, y = 0.05, label = paste("With gas\nMean: $", round(avgMaintInc, 2), sep="")), nudge_x = -10) +
-  lims(x=c(-20,60)) +
-  labs(title = "Wage Distribution")
+maint = (600 + 30 + 100 + 300) / 5000 # depreciation + oil + service + parts per the next 5,000 miles
 ```
 
+Next we'll create a few measures of earnings, becoming more specific in terms of what's included as the list goes down. The last measure is likely the most realistic of what I earn. 95% boostrapped Confident Intervals are listed as well.
+
 ```{r}
-b = boot((data_drv$Earnings + data_drv$Tips - gasPrice * data_drv$AdjGas - maint * data_drv$AdjDistance) * (60/data_drv$AdjDuration), function (v, ix) mean(v[ix]), R = 5000)
-b$t0
-boot.ci(b, type = "bca")$bca[1, c(4, 5)]
+b = boot((data_drv$Earnings + data_drv$Tips) * (60/data_drv$Duration), function (v, ix) mean(v[ix]), R = 5000)
+ci = boot.ci(b, type = "perc")$perc[1, ]
+sprintf("$%0.2f (95%% CI: $%0.2f — $%0.2f)", b$t0, ci[4], ci[5])
+
+b = boot(data_drv$Earnings * (60/data_drv$Duration), function (v, ix) mean(v[ix]), R = 5000)
+ci = boot.ci(b, type = "perc")$perc[1, ]
+sprintf("$%0.2f (95%% CI: $%0.2f — $%0.2f)", b$t0, ci[4], ci[5])
+
+b = boot((data_drv$Earnings + data_drv$Tips) * (60/data_drv$AdjDuration), function (v, ix) mean(v[ix]), R = 5000)
+ci = boot.ci(b, type = "perc")$perc[1, ]
+sprintf("$%0.2f (95%% CI: $%0.2f — $%0.2f)", b$t0, ci[4], ci[5])
+
+b = boot((data_drv$Earnings + data_drv$Tips - data_drv$AdjGas * gasPrice) * (60/data_drv$AdjDuration), function (v, ix) mean(v[ix]), R = 5000)
+ci = boot.ci(b, type = "perc")$perc[1, ]
+sprintf("$%0.2f (95%% CI: $%0.2f — $%0.2f)", b$t0, ci[4], ci[5])
+
+b = boot((data_drv$Earnings + data_drv$Tips - data_drv$AdjGas * gasPrice - maint * data_drv$AdjDistance) * (60/data_drv$AdjDuration), function (v, ix) mean(v[ix]), R = 5000)
+ci = boot.ci(b, type = "perc")$perc[1, ]
+sprintf("$%0.2f (95%% CI: $%0.2f — $%0.2f)", b$t0, ci[4], ci[5])
 ```
 
 ### Driving Days and Times
 
+How do earnings correlate with time and day of the ride?
+
 ```{r,}
 p1 = ggplot(data_drv, aes(StartTime, AdjWage)) + theme +
-  geom_point() +
-  geom_smooth(method = "loess") +
-  labs(title = "Adjusted Wage by Start Time")
+  geom_point(color = "#EA0B8C") +
+  geom_smooth(method = mgcv::gam, formula = y ~ s(x, bs = "gp", k = 10), se = F, color = "black") +
+  labs(title = "Adjusted Wage by Start Time", x = "Start Time", y = "Adjusted Wage") +
+  scale_x_continuous(breaks = seq(4, 24, 2))
 
-p2 = ggplot(data_drv) +
-  geom_boxplot(aes(DOW, AdjWage)) +
-  labs(title = "Adjusted Wage by Day of the Week")
+res = data.frame()
 
-grid.arrange(p1, p2, ncol=2)
+for (dow in levels(data_drv$DOW)) {
+  
+  f = function(data, indices) {
+    return(mean(data[indices]))
+  }
+  
+  d = data_drv[data_drv$DOW == dow, ]
+  b = boot(d$AdjWage, statistic = f, R = 1000)
+  
+  r = boot.ci(b, type = "bca")$bca
+  
+  res[dow, c("lb", "AdjWage", "ub")] = list(r[1, 4], b$t0, r[1, 5])
+}
+
+p2 = rownames_to_column(res, "DOW") %>%
+  ggplot() + theme + 
+  geom_col(aes(DOW, AdjWage, fill = AdjWage)) +
+  geom_errorbar(aes(DOW, ymin = lb, ymax = ub, width=0.2)) +
+  labs(title = "Adjusted Wage by Day of the Week", y = "Adjusted Wage", x = "Day of Week") + 
+  scale_x_discrete(limits = levels(data_drv$DOW)) +
+  scale_fill_continuous_sequential(palette = "Magenta", begin = 0.1, end = 0.9, rev = T)
+
+p = grid.arrange(p1, p2, ncol=2)
+
+ggsave("StartTime_DOW.png", p, width = 10, height = 6)
 
 ggplot(data_drv) +
   geom_tile(aes(x = StartTime, y = DOW, fill = AdjWage)) +
-  labs(x = "Start Time", y = "Day of Week", fill = "Adjusted Wage", title = "Adjusted Wage per Day and Hour")
+  labs(x = "Start Time", y = "Day of Week", fill = "Adjusted Wage", title = "Adjusted Wage per Day and Hour") +
+  scale_fill_continuous_sequential(palette = "Magenta", begin = 0.1, end = 0.9, rev = T)
+```
+
+Effect of day on wage?
+
+```{r}
+summary(aov(AdjWage ~ DOW, data = data_drv))
 ```
 
 ### Average Wage given Days and Times
 
+Look at the big picture of day and time on wage.
+
 ```{r}
-bins = seq(6, 22, 2)
-
-data_drv$StartTimeBin = cut(data_drv$StartTime, breaks = c(bins, 24), labels = bins)
-
-data_drv %>%
+p = data_drv %>%
   group_by(StartTimeBin, DOW) %>%
-  summarise(m = sum(Earnings + Tips - gasPrice * AdjGas) * (60 / sum(AdjDuration)), n = n()) %>%
+  summarise(m = sum(Earnings + Tips - gasPrice * AdjGas) * (60 / sum(AdjDuration))) %>%
   ggplot() + theme +
   geom_tile(aes(x = StartTimeBin, y = DOW, fill = m)) +
-  labs(x = "Start Time", y = "Day of Week", fill = "Adjusted Wage", title = "Adjusted Wage per Day and Hour")
+  labs(x = "Start Time", y = "Day of Week", fill = "Adjusted Wage", title = "Adjusted Wage per Day and Hour") +
+  scale_fill_continuous_sequential(palette = "Magenta", begin = 0.1, end = 0.9, rev = T)
+
+p
+
+ggsave("WageDayandTime.png", p, width = 6, height = 4)
 ```
 
 ### Duration on Wage
 
+Does Lyft pay what it claims to? Do longer rides pay more or less than shorter rides?
+
 ```{r}
-ggplot(data_drv, aes(Duration, AdjWage)) +
-  geom_point() +
-  geom_smooth(method = "loess") +
-  labs(title = "Adjusted Wage given Ride Duration", subtitle = "Do longer rides earn more?")
+summary(MASS::rlm(Earnings ~ Distance + Duration, data = d))
+summary(lm(Earnings ~ Distance + Duration, data = d))
+```
+
+```{r}
+miles = 0.6525
+hours = 0.225 * 60
+```
+
+```{r}
+data_drv$Speed = data_drv$Distance / (data_drv$Duration/60)
+```
+
+```{r}
+summary(lm(Speed ~ log(Distance), data = data_drv))
+```
+
+```{r}
+D = seq(1, 40, 0.5)
+
+W = (9.234 + 9.377 * log(D)) * 0.6525 + 13.5
+
+p = ggplot() + theme +
+  geom_line(aes(D, W)) +
+  geom_label(aes(x = 30, y = 35, label = "W == (beta[0] + beta[1] %*% log(D)) %*% L + H"), parse = T) +
+  labs(x = "Distance (miles)", y = "Wage ($ / hr)", title = "Wage as a function of distance")
+
+p
+
+ggsave("WageDistance.png", p, width = 5, height = 3)
 ```
 
 ### Time Labels
 
-This is a WIP.
+How are my artificial time labels correlated with wage? For the rule set, see the `CleanData.R`.
+
+```{r}
+table(data_drv$TimeLabel)
+```
+
+Do nightlife rides pay more than non-nightlife rides, as some online articles claim?
+
+```{r}
+t.test(data_drv[data_drv$TimeLabel == "Nightlife", ]$AdjWage, data_drv[data_drv$TimeLabel != "Nightlife", ]$AdjWage, conf.level = 0.95)
+```
+
+Are there differences between commutes?
+
+```{r}
+d = data_drv[data_drv$TimeLabel %in% c("MorningCommute", "AfternoonCommute", "EveningCommute"), ]
+anova(lm(AdjWage ~ TimeLabel, data = d))
+TukeyHSD(aov(lm(AdjWage ~ TimeLabel, data = d)))
+```
+
+View all the labels are their wages.
 
 ```{r}
 res = data.frame()
@@ -172,14 +290,15 @@ for (tl in unique(data_drv$TimeLabel)) {
 
 rownames_to_column(res, "TimeLabel") %>%
   ggplot() + theme + 
-  geom_bar(aes(TimeLabel, est), stat="identity") +
+  geom_bar(aes(TimeLabel, est, fill = est), stat="identity") +
   geom_errorbar(aes(TimeLabel, ymin = lb, ymax = ub, width=0.1)) +
-  labs(title = "Wage given Time Label")
+  labs(title = "Wage given Time Label") +
+  scale_fill_continuous_sequential(palette = "Magenta", begin = 0.1, end = 0.9, rev = T)
 ```
 
 ### Drive Position
 
-Do the first and last drives of a session differ from the rides that come in-between?
+Do the first and last drives of a session differ in wage from the rides that come in-between?
 
 ```{r}
 res = data.frame()
@@ -194,17 +313,28 @@ for (pos in unique(data_drv$Position)) {
   
   r = boot.ci(b, type = "bca")$bca
   
-  res[pos, c("lb", "est", "ub")] = list(r[1, 4], b$t0, r[1, 5])
+  res[pos, c("lb", "AdjWage", "ub")] = list(r[1, 4], b$t0, r[1, 5])
 }
 
-rownames_to_column(res, "Position") %>%
+p = rownames_to_column(res, "Position") %>%
   ggplot() + theme + 
-  geom_bar(aes(Position, est), stat="identity") +
+  geom_col(aes(Position, AdjWage, fill = AdjWage)) +
   geom_errorbar(aes(Position, ymin = lb, ymax = ub, width=0.1)) +
-  labs(title = "Wage given Drive Position")
+  labs(title = "Adjusted Wage given Drive Position", y = "Adjusted Wage") +
+  scale_x_discrete(limits = c("First", "Middle", "Last")) +
+  scale_fill_continuous_sequential(palette = "Magenta", begin = 0.1, end = 0.9, rev = T)
+
+p
+
+ggsave("WagePosition.png", p, width = 6, height = 4)
 ```
 
 It appears as though the last ride is likely to earn less than the other two types of rides.
+
+```{r}
+summary(aov(AdjWage ~ Position, data = data_drv))
+TukeyHSD(aov(AdjWage ~ Position, data = data_drv))
+```
 
 ### Drive Ratings
 
@@ -213,76 +343,142 @@ Only recently have I started to log satisfaction of the drive. More on this to c
 ```{r}
 data_drv %>%
   group_by(StartTimeBin, DOW) %>%
-  summarise(m = mean(RatingMean)) %>%
+  summarise(m = mean(RatingConversation, na.rm = T)) %>%
   complete(DOW, fill = list(m = 0)) %>%
-  ggplot() +
+  ggplot() + theme +
   geom_tile(aes(x = StartTimeBin, y = DOW, fill = m)) +
   labs(title = "Mean Drive Rating given Days and Times")
 ```
 
-## Local Regression
-
-Local and global regression patterns given the hour of the day on wage.
-
-```{r}
-m1 = loess(AdjWage ~ StartTime, 
-          span = 0.4, 
-          degree = 2, 
-          data = data_drv, 
-          family = "gaussian")
-
-m2 = loess(AdjWage ~ StartTime, 
-          span = 1.0, 
-          degree = 2, 
-          data = data_drv, 
-          family = "gaussian")
-
-m3 = loess(AdjWage ~ StartTime, 
-          span = 0.4, 
-          degree = 1, 
-          data = data_drv, 
-          family = "gaussian")
-
-m4 = loess(AdjWage ~ StartTime, 
-          span = 1.0, 
-          degree = 1, 
-          data = data_drv, 
-          family = "gaussian")
-```
-
-```{r}
-x = seq(7.5, 22, 0.1)
-d = data.frame(x = rep(x, 4),
-               y = c(predict(m1, x), predict(m2, x), predict(m3, x), predict(m4, x)),
-               k = rep(c(1, 2, 3, 4), each = length(x)))
-
-ggplot() + theme +
-  geom_line(aes(d$x, d$y, group = d$k), color = rep(c("#db593b", "#e3765d", "#69c93c", "#95de73"), each = length(x))) +
-  geom_point(aes(data_drv$StartTime, data_drv$AdjWage, color=data_drv$Position)) +
-  labs(x = "Start Time", y = "Adjusted Wage")
-```
-
 ## Start Location
 
-How does where the ride is started affect how much I'll earn? Bootstrapped error bars to come.
+What are the top 3 starting locations? How many starting locations have only been visited once? How many total are there?
 
 ```{r}
-sl_wage = data_drv %>% 
+SL.counts = data_drv %>%
   group_by(StartLocation) %>%
-  summarise(AdjWage = round(sum(Earnings + Tips - gasPrice * AdjGas) * (60 / sum(AdjDuration)), 2), 
-            SD = sd((Earnings + Tips - gasPrice * AdjGas) * (60 / AdjDuration)),
-            AvgDur = mean(AdjDuration),
-            N = n()) %>%
-  filter(N > 2)
+  summarise(n = n()) %>%
+  arrange(desc(n))
 
-sl_wage %>%
-  arrange(AdjWage) %>%
-  mutate(StartLocation = factor(StartLocation, StartLocation)) %>%
+head(SL.counts, 3)
+
+sum(SL.counts$n == 1)
+nrow(SL.counts)
+```
+
+How does where the ride is started correlate with how much I'll earn?
+
+```{r}
+res = data.frame()
+
+for (loc in unique(data_drv$StartLocation)) {
+  
+  f = function(data, indices) {
+    return(mean(data[indices]))
+  }
+  
+  d = data_drv[data_drv$StartLocation == loc, ]$AdjWage
+  
+  if (length(d) >= 5) {
+    b = boot(data_drv[data_drv$StartLocation == loc, ]$AdjWage, statistic = f, R = 1000)
+    
+    r = boot.ci(b, type = "bca")$bca
+    
+    res[loc, c("lb", "AdjWage", "ub")] = list(r[1, 4], b$t0, r[1, 5])
+  }
+}
+
+d = rownames_to_column(res, "StartLocation")
+
+p = d %>%
   ggplot() + theme + 
-  geom_bar(aes(StartLocation, AdjWage, fill = N), stat="identity") + 
-  # geom_errorbar(aes(StartLocation, ymin = AdjWage - SD / sqrt(N), ymax = AdjWage + SD / sqrt(N), width=0.2)) +
-  labs(x = "Start Location", y = "Adjusted Wage", title = "Adjusted Wage by Start Location") +
-  coord_flip()
+  geom_col(aes(StartLocation, AdjWage, fill = AdjWage)) +
+  geom_errorbar(aes(StartLocation, ymin = lb, ymax = ub, width=0.2)) +
+  scale_x_discrete(limits = d[order(d$AdjWage), "StartLocation"]) +
+  scale_fill_continuous_sequential(palette = "Magenta", begin = 0.1, end = 0.9, rev = T) +
+  coord_flip() +
+  labs(title = "Adjusted Wage given Start Location", x = "Start Location", y = "Adusted Wage")
+
+p
+
+ggsave("StartLocationWage.png", p, width = 10, height = 6)
+```
+
+## Wait Times
+
+First, filter a new dataset to only wait times between rides.
+
+```{r}
+wd = data_all %>% filter(Period == "Search" & Movement != "Home")
+```
+
+```{r}
+library(mgcv)
+```
+
+Day of the week does not seem to be correlated with whether I'll have to wait between rides.
+
+```{r}
+summary(aov(glm(I(Duration == 0) ~ DOW, data = wd, family = "binomial")))
+```
+
+Day of the week does not seem to be correlated with how much I'll have to wait between rides.
+
+```{r}
+summary(aov(glm(Duration ~ DOW, data = wd[wd$Duration > 0, ], family = Gamma(link = "log"))))
+```
+
+```{r}
+p = data_all %>%
+  filter(Period == "Search" & Movement != "Home") %>%
+  group_by(StartTimeBin, DOW) %>%
+  summarise(m = mean(Duration)) %>%
+  ggplot() + theme +
+  geom_tile(aes(x = StartTimeBin, y = DOW, fill = m)) +
+  labs(x = "Start Time", y = "Day of Week", fill = "Wait Time", title = "Wait Times per Day and Hour") +
+  scale_fill_continuous_sequential(palette = "Magenta", begin = 0.1, end = 0.9, rev = T)
+
+p
+
+ggsave("WaitDayandTime.png", p, width = 6, height = 4)
+```
+
+Wait Times for Location
+
+```{r}
+res = data.frame()
+
+mask = data_all$Period != "Drive"
+
+for (loc in unique(data_all[mask, ]$StartLocation)) {
+  
+  f = function(data, indices) {
+    return(mean(data[indices]))
+  }
+  
+  d = data_all[mask & data_all$StartLocation == loc, ]$Duration
+  
+  if (length(d) > 5) {
+    b = boot(data_all[mask & data_all$StartLocation == loc, ]$Duration, statistic = f, R = 1000)
+    
+    r = boot.ci(b, type = "bca")$bca
+    
+    res[loc, c("lb", "Duration", "ub")] = list(r[1, 4], b$t0, r[1, 5])
+  }
+}
+
+d = rownames_to_column(res, "StartLocation")
+
+p = d %>%
+  ggplot() + theme + 
+  geom_col(aes(StartLocation, Duration, fill = Duration)) +
+  geom_errorbar(aes(StartLocation, ymin = lb, ymax = ub, width=0.2)) +
+  scale_x_discrete(limits = d[order(d$Duration), "StartLocation"]) +
+  scale_fill_continuous_sequential(palette = "Magenta", begin = 0.1, end = 0.9, rev = T) +
+  coord_flip() +
+  labs(title = "Wait Time given Start Location", x = "Start Location", y = "Duration")
+
+p
 ```
 
 ## Determinants
@@ -290,23 +486,74 @@ sl_wage %>%
 Does having conversation with the passenger make a difference on how much they tip? What if it's a shared ride? What about their interaction?
 
 ```{r}
-data_drv %>%
+mean(data_drv$Tips > 0)
+mean(data_drv[data_drv$Tips > 0, ]$Tips)
+```
+
+```{r}
+p = data_drv %>%
+  filter(Tips > 0) %>%
   group_by(Conversation, Shared) %>%
   summarise(avg = mean(Tips)) %>%
   ggplot() + theme +
   geom_point(aes(Conversation, avg, color = Shared, shape = Shared), size=4) +
   geom_line(aes(Conversation, avg, group = Shared), lty=2) +
-  labs(x = "Conversation", y = "Mean Tip", title = "Condition Interactions")
-```
+  lims(y = c(0, 4)) +
+  labs(x = "Conversation", y = "Mean Tip", title = "Tips by Shared and Conversation", subtitle = "For Drives that left a Tip > $0")
 
-## Totals
+p
+
+ggsave("TipsInteraction.png", p, width = 6, height = 5)
+```
 
 ```{r}
-sum(data_drv$AdjDistance, na.rm = T)
-sum(data_drv$AdjDuration, na.rm = T) / 60
+tip.model = glm(Tips ~ Distance + Duration + Passengers + Goal + Origin, data = data_drv %>% filter(Tips > 0), family = Gamma(link = "log"))
+
+tip.model.c = glm(Tips ~ Conversation + Distance + Duration + Passengers + Goal + Origin, data = data_drv %>% filter(Tips > 0), family = Gamma(link = "log"))
+a = anova(tip.model, tip.model.c, "Chisq")
+a
+pchisq(a$Deviance[2], a$Df[2], lower.tail = F)
+
+
+tip.model = glm(Tips ~ Distance + Duration + Passengers + Goal + Origin, data = data_drv %>% filter(Tips > 0), family = Gamma(link = "log"))
+
+tip.model.c = glm(Tips ~ Shared + Distance + Duration + Passengers + Goal + Origin, data = data_drv %>% filter(Tips > 0), family = Gamma(link = "log"))
+a = anova(tip.model, tip.model.c, "Chisq")
+a
+pchisq(a$Deviance[2], a$Df[2], lower.tail = F)
+
+
+tip.model = glm(Tips ~ Conversation + Shared + Distance + Duration + Passengers + Goal + Origin, data = data_drv %>% filter(Tips > 0), family = Gamma(link = "log"))
+
+tip.model.c = glm(Tips ~ Conversation + Shared + Conversation:Shared + Distance + Duration + Passengers + Goal + Origin, data = data_drv %>% filter(Tips > 0), family = Gamma(link = "log"))
+a = anova(tip.model, tip.model.c, "Chisq")
+a
+pchisq(a$Deviance[2], a$Df[2], lower.tail = F)
 ```
 
-About 1,300 miles driven for Lyft, and 55 hours worth of my time.
+```{r}
+tip.model = glm(I(Tips > 0) ~ Distance + Duration + Passengers + Goal + Origin, data = data_drv, family = "binomial")
+
+tip.model.c = glm(I(Tips > 0) ~ Conversation + Distance + Duration + Passengers + Goal + Origin, data = data_drv, family = "binomial")
+coef(tip.model.c)["ConversationTRUE"]
+a = anova(tip.model, tip.model.c, "Chisq")
+a
+pchisq(a$Deviance[2], a$Df[2], lower.tail = F)
 
 
+tip.model = glm(I(Tips > 0) ~ Distance + Duration + Passengers + Goal + Origin, data = data_drv, family = "binomial")
 
+tip.model.c = glm(I(Tips > 0) ~ Shared + Distance + Duration + Passengers + Goal + Origin, data = data_drv, family = "binomial")
+coef(tip.model.c)["SharedTRUE"]
+a = anova(tip.model, tip.model.c, "Chisq")
+a
+pchisq(a$Deviance[2], a$Df[2], lower.tail = F)
+
+
+tip.model = glm(I(Tips > 0) ~ Conversation + Shared + Distance + Duration + Passengers + Goal + Origin, data = data_drv, family = "binomial")
+
+tip.model.c = glm(I(Tips > 0) ~ Conversation + Shared + Conversation:Shared + Distance + Duration + Passengers + Goal + Origin, data = data_drv, family = "binomial")
+a = anova(tip.model, tip.model.c, "Chisq")
+a
+pchisq(a$Deviance[2], a$Df[2], lower.tail = F)
+```

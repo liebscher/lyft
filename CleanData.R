@@ -18,35 +18,38 @@ data$EndTime = strptime(data$`End Time`, "%H:%M")
 data$EndTime = as.numeric(format(data$EndTime, "%H")) + as.numeric(format(data$EndTime, "%M")) / 60
 
 label = function (t, d, o, g) {
-  if (d %in% c(1, 2, 3, 4, 5)) {
+  if (d %in% c(1, 2, 3, 4, 5) & !anyNA(c(o, g))) {
     if (t > 5.0 & t < 10) {
-      if (!is.na(g) & g == "Work") {
+      if (g == "Work" | g == "School") {
         return("MorningCommute")
       }
-    } else if (t > 10 & t < 15) {
-      if ((!is.na(o) & o == "Work") | (!is.na(g) & g == "Work")) {
+    } else if (t >= 10 & t < 15) {
+      if (o == "Work" | g == "Work") {
         return("AfternoonCommute")
       }
-    } else if (t > 15.0 & t < 19.5) {
-      if (!is.na(o) & o == "Work") {
+    } else if (t >= 15.0 & t < 20) {
+      if (o == "Work" | o == "School") {
         return("EveningCommute")
       }
     }
-  } else if (d %in% c(5, 6, 7)) {
-    if (d %in% c(6, 7)) {
-      if (t > 9 & t < 18) {
-        if (!anyNA(c(o, g))) {
-          if ((o == "Hotel" & g %in% c("Leisure", "Food", "Social")) |
-              (g == "Hotel" & o %in% c("Leisure", "Food", "Social"))) {
-            return("Tourism")
-          }
-          
+  }
+  if (d %in% c(6, 7)) {
+    if (t >= 9 & t < 18) {
+      if (!anyNA(c(o, g))) {
+        if ((o == "Hotel" & g %in% c("Leisure", "Food", "Social")) |
+            (g == "Hotel" & o %in% c("Leisure", "Food", "Social"))) {
+          return("Tourism")
         }
+        
       }
     }
-    if (t > 18.0 & t < 24.0) {
-      if (!is.na(g) & g == "Social") {
-        return("Nightlife")
+  }
+  if (d %in% c(5, 6, 7)) {
+    if (t < 3.0 | t > 18.0) {
+      if (!anyNA(c(o, g))) {
+        if ((g == "Social") | (g == "Home" & o == "Social")) {
+          return("Nightlife")
+        }
       }
     }
   }
@@ -55,7 +58,6 @@ label = function (t, d, o, g) {
 
 data$TimeLabel = mapply(label, data$StartTime, data$DOW, data$Origin, data$Goal)
 
-data$Cancel = as.logical(data$Cancel)
 data$Shared = as.logical(data$Shared)
 data$Conversation = as.logical(data$Conversation)
 
@@ -153,6 +155,7 @@ for (session in unique(data$Session)) {
   result = rbind(result, s[w, ])
 }
 
-result = mutate(result, AdjWage = (Earnings + Tips) * (60 / AdjDuration))
+
+result = mutate(result, AdjWage = (Earnings + Tips - 3.4124 * AdjGas) * (60 / AdjDuration))
 
 write_csv(result, "CleanLyftData_Drives.csv")
